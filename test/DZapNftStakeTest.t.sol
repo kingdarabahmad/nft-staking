@@ -60,6 +60,47 @@ contract DZapNftStakeTest is Test {
     }
 
     function testUnstakeNft() public mintNftToUser {
-        
+        //stake nft
+        vm.startPrank(USER);
+        uint256[] memory ids = new uint256[](1);
+        ids[0] = 1;
+        nft.approve(address(nftStake), 1);
+        nftStake.stakeNft(address(nft), ids);
+
+        //unstake nft
+        nftStake.unstakeNft(address(nft), ids);
+        DZapNftStake.StakedNftData[] memory stakedNftData = nftStake.getUserStakedNftData(USER);
+        console.log(stakedNftData[0].stakedAt);
+        assertEq(stakedNftData[0].isUnbonding, true);
+
+        vm.stopPrank();
+
+        //unstake nft
+    }
+
+    function testGetUserStakedNftData() public mintNftToUser {
+        vm.startPrank(USER);
+        uint256[] memory ids = new uint256[](1);
+        ids[0] = 1;
+        nft.approve(address(nftStake), 1);
+        nftStake.stakeNft(address(nft), ids);
+
+        //unstake nft
+        nftStake.unstakeNft(address(nft), ids);
+        DZapNftStake.StakedNftData[] memory expectedData = new DZapNftStake.StakedNftData[](1);
+        expectedData[0] = DZapNftStake.StakedNftData({
+            owner: USER,
+            tokenId: 1,
+            stakedAt: 1,
+            lastClaimedAt: 1,
+            isUnbonding: true,
+            unbondingStart: 1
+        });
+
+        DZapNftStake.StakedNftData[] memory stakedNftData = nftStake.getUserStakedNftData(USER);
+
+        assertEq(keccak256(abi.encode(stakedNftData)), keccak256(abi.encode(expectedData)));
+
+        vm.stopPrank();
     }
 }

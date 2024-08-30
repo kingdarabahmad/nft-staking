@@ -23,9 +23,10 @@
 pragma solidity ^0.8.18;
 
 import {IERC721} from "@openzeppelin/contracts/token/ERC721/IERC721.sol";
-import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {IRewardToken} from "./interfaces/IRewardToken.sol";
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 
-contract DZapNftStake {
+contract DZapNftStake is Ownable {
     /////////////////
     // Errors      //
     /////////////////
@@ -37,7 +38,12 @@ contract DZapNftStake {
     ///////////////////////////
     // State variables      //
     ///////////////////////////
-    IERC20 immutable i_rewardToken;
+    uint256 private unbondingPeriod;
+    uint256 private delayPeriod;
+    uint256 private rewardRate;
+
+    IRewardToken immutable i_rewardToken;
+    bool private s_paused;
 
     struct StakedNftData {
         address owner;
@@ -48,13 +54,15 @@ contract DZapNftStake {
         uint256 unbondingStart;
     }
 
-    mapping(address user => StakedNftData[] stakedNfts) public s_userStakedNfts;
-
+    mapping(address user => StakedNftData[] stakedNfts) private s_userStakedNfts;
+    mapping(address => uint256) public s_pendingRewards;
     ///////////////////////////
     // Events                //
     ///////////////////////////
+
     event NftStaked(address indexed user, uint256[] indexed tokenIds);
     event NftUnstaked(address indexed user, uint256 indexed tokenId);
+    event RewardClaimed(address indexed user, uint256 amount);
     event NftNotFoundOrAlreadyUnbounded();
 
     ////////////////
@@ -75,12 +83,17 @@ contract DZapNftStake {
         _;
     }
 
+    modifier onlyWhenNotPaused() {
+        require(!s_paused, "Staking is paused");
+        _;
+    }
+
     /////////////////
     // Functions   //
     /////////////////
 
-    constructor(address _rewardTokenContract) {
-        i_rewardToken = IERC20(_rewardTokenContract);
+    constructor(address _rewardTokenContract) Ownable(msg.sender) {
+        i_rewardToken = IRewardToken(_rewardTokenContract);
     }
 
     /////////////////////////////////////
@@ -91,13 +104,10 @@ contract DZapNftStake {
         public
         AddressMustNotZero(_nftContract)
         TokenIdsLengthNotZero(_tokenIds)
+        onlyWhenNotPaused
     {
         for (uint256 i = 0; i < _tokenIds.length; i++) {
             IERC721 nftContract = IERC721(_nftContract);
-
-            if (nftContract.ownerOf(_tokenIds[i]) != msg.sender) {
-                revert DZapNftStake_NotOwnerOfTokenId();
-            }
 
             //transfer nfts to contract
             nftContract.transferFrom(msg.sender, address(this), _tokenIds[i]);
@@ -142,11 +152,71 @@ contract DZapNftStake {
         }
     }
 
+    function withdrawRewards(address _nftContract, uint256 _tokenId) public {
+        (bool found, uint256 index) = _findStakedNftIndex(msg.sender, _tokenId);
+        if (found) {
+            StakedNftData memory stakedNft = s_userStakedNfts[msg.sender][index];
+            if (!(block.timestamp >= stakedNft.unbondingStart + unbondingPeriod)) {
+                revert("Cannot withdraw rewards before unbonding period");
+            }
+            //remove NFT from the record
+            s_userStakedNfts[msg.sender][index] = s_userStakedNfts[msg.sender][s_userStakedNfts[msg.sender].length - 1];
+            s_userStakedNfts[msg.sender].pop();
+
+            //tansfer back the nft to user
+            IERC721 nftContract = IERC721(_nftContract);
+            nftContract.transferFrom(address(this), msg.sender, _tokenId);
+        }
+    }
+
+    function claimRewards() external {
+        uint256 totalRewards = 0;
+
+        for (uint256 i = 0; i < s_userStakedNfts[msg.sender].length; i++) {
+            StakedNftData memory stakedNFT = s_userStakedNfts[msg.sender][i];
+            if (!stakedNFT.isUnbonding && block.timestamp >= stakedNFT.lastClaimedAt + delayPeriod) {
+                uint256 rewards = (block.timestamp - stakedNFT.lastClaimedAt) * rewardRate;
+                totalRewards += rewards;
+                stakedNFT.lastClaimedAt = block.timestamp;
+            }
+        }
+
+        require(totalRewards > 0, "No rewards to claim");
+
+        s_pendingRewards[msg.sender] += totalRewards;
+        i_rewardToken.mint(msg.sender, totalRewards);
+
+        emit RewardClaimed(msg.sender, totalRewards);
+    }
+
+    function pauseStaking() external {
+        s_paused = true;
+    }
+
+    function unpauseStaking() external {
+        s_paused = false;
+    }
+
+    function setRewardRate(uint256 _rewardRate) external onlyOwner {
+        rewardRate = _rewardRate;
+    }
+
     ///////////////////////////////////////
     // Private and Internal Functions     //
     /////////////////////////////////////////
+    function _findStakedNftIndex(address _user, uint256 _tokenId) internal view returns (bool, uint256) {
+        for (uint256 i = 0; i < s_userStakedNfts[_user].length; i++) {
+            if (s_userStakedNfts[_user][i].tokenId == _tokenId) {
+                return (true, i);
+            }
+        }
+        return (false, 0);
+    }
 
     ////////////////////////////////////////////
     // Public and External view Functions     //
     ///////////////////////////////////////////
+    function getUserStakedNftData(address _user) public view returns (StakedNftData[] memory) {
+        return s_userStakedNfts[_user];
+    }
 }
