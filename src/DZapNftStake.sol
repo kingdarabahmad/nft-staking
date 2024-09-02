@@ -25,8 +25,11 @@ pragma solidity ^0.8.18;
 import {IERC721} from "@openzeppelin/contracts/token/ERC721/IERC721.sol";
 import {IRewardToken} from "./interfaces/IRewardToken.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import {OwnableUpgradeable} from "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
+import {UUPSUpgradeable} from "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 
-contract DZapNftStake is Ownable {
+contract DZapNftStake is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     /////////////////
     // Errors      //
     /////////////////
@@ -34,16 +37,22 @@ contract DZapNftStake is Ownable {
     error DZapNftStake_TokenIdsLengthZero();
     error DZapNftStake_NotOwnerOfTokenId();
     error DZapNftStake_NFTNotFoundOrAlreadyUnbonded();
+    error DZapNftStake_ContractAlreadyInitialized();
+    error DZapNftStake_UnbondPeriodNotOver();
+    error DZapNftStake_NoRewardToClaim();
+    error DZapNftStake_StakingPaused();
+    error DZapNftStake_NotAnOwner();
 
     ///////////////////////////
     // State variables      //
     ///////////////////////////
-    uint256 private unbondingPeriod;
-    uint256 private delayPeriod;
-    uint256 private rewardRate;
+    uint256 private constant UNBONDING_PERIOD = 2 minutes;
+    uint256 private constant DELAY_PERIOD = 1 minutes;
 
-    IRewardToken immutable i_rewardToken;
+    IRewardToken private i_rewardToken;
     bool private s_paused;
+    uint256 private s_rewardRate;
+    bool private s_initialized = false;
 
     struct StakedNftData {
         address owner;
@@ -55,7 +64,8 @@ contract DZapNftStake is Ownable {
     }
 
     mapping(address user => StakedNftData[] stakedNfts) private s_userStakedNfts;
-    mapping(address => uint256) public s_pendingRewards;
+    mapping(address => uint256) private s_pendingRewards;
+
     ///////////////////////////
     // Events                //
     ///////////////////////////
@@ -84,7 +94,9 @@ contract DZapNftStake is Ownable {
     }
 
     modifier onlyWhenNotPaused() {
-        require(!s_paused, "Staking is paused");
+        if (s_paused) {
+            revert DZapNftStake_StakingPaused();
+        }
         _;
     }
 
@@ -92,8 +104,16 @@ contract DZapNftStake is Ownable {
     // Functions   //
     /////////////////
 
-    constructor(address _rewardTokenContract) Ownable(msg.sender) {
-        i_rewardToken = IRewardToken(_rewardTokenContract);
+    function initialize(address i_rewardTokenContract) public initializer {
+        if (s_initialized) {
+            revert DZapNftStake_ContractAlreadyInitialized();
+        }
+        s_initialized = true;
+        __Ownable_init(msg.sender);
+        __UUPSUpgradeable_init();
+        i_rewardToken = IRewardToken(i_rewardTokenContract);
+        s_paused = false;
+        s_rewardRate = 4;
     }
 
     /////////////////////////////////////
@@ -152,14 +172,15 @@ contract DZapNftStake is Ownable {
         }
     }
 
-    function withdrawRewards(address _nftContract, uint256 _tokenId) public {
+    function withdrawNFT(address _nftContract, uint256 _tokenId) public {
         (bool found, uint256 index) = _findStakedNftIndex(msg.sender, _tokenId);
         if (found) {
             StakedNftData memory stakedNft = s_userStakedNfts[msg.sender][index];
-            if (!(block.timestamp >= stakedNft.unbondingStart + unbondingPeriod)) {
-                revert("Cannot withdraw rewards before unbonding period");
+            if (!(block.timestamp >= stakedNft.unbondingStart + UNBONDING_PERIOD)) {
+                revert DZapNftStake_UnbondPeriodNotOver();
             }
             //remove NFT from the record
+
             s_userStakedNfts[msg.sender][index] = s_userStakedNfts[msg.sender][s_userStakedNfts[msg.sender].length - 1];
             s_userStakedNfts[msg.sender].pop();
 
@@ -170,35 +191,27 @@ contract DZapNftStake is Ownable {
     }
 
     function claimRewards() external {
-        uint256 totalRewards = 0;
+        uint256 userRewards = _calculateRewards(msg.sender);
 
-        for (uint256 i = 0; i < s_userStakedNfts[msg.sender].length; i++) {
-            StakedNftData memory stakedNFT = s_userStakedNfts[msg.sender][i];
-            if (!stakedNFT.isUnbonding && block.timestamp >= stakedNFT.lastClaimedAt + delayPeriod) {
-                uint256 rewards = (block.timestamp - stakedNFT.lastClaimedAt) * rewardRate;
-                totalRewards += rewards;
-                stakedNFT.lastClaimedAt = block.timestamp;
-            }
+        if (userRewards <= 0) {
+            revert DZapNftStake_NoRewardToClaim();
         }
+        s_pendingRewards[msg.sender] = 0;
+        i_rewardToken.mint(msg.sender, userRewards);
 
-        require(totalRewards > 0, "No rewards to claim");
-
-        s_pendingRewards[msg.sender] += totalRewards;
-        i_rewardToken.mint(msg.sender, totalRewards);
-
-        emit RewardClaimed(msg.sender, totalRewards);
+        emit RewardClaimed(msg.sender, userRewards);
     }
 
-    function pauseStaking() external {
+    function pauseStaking() external onlyOwner {
         s_paused = true;
     }
 
-    function unpauseStaking() external {
+    function unpauseStaking() external onlyOwner {
         s_paused = false;
     }
 
     function setRewardRate(uint256 _rewardRate) external onlyOwner {
-        rewardRate = _rewardRate;
+        s_rewardRate = _rewardRate;
     }
 
     ///////////////////////////////////////
@@ -213,10 +226,38 @@ contract DZapNftStake is Ownable {
         return (false, 0);
     }
 
+    function _calculateRewards(address user) internal returns (uint256) {
+        uint256 totalRewards = 0;
+        for (uint256 i = 0; i < s_userStakedNfts[user].length; i++) {
+            StakedNftData memory stakedNFT = s_userStakedNfts[user][i];
+
+            if (stakedNFT.unbondingStart + UNBONDING_PERIOD > block.timestamp) {
+                continue;
+            }
+            if ((block.timestamp >= stakedNFT.lastClaimedAt + DELAY_PERIOD)) {
+                uint256 rewards = (block.timestamp - stakedNFT.lastClaimedAt) * s_rewardRate;
+                totalRewards += rewards;
+                s_userStakedNfts[user][i].lastClaimedAt = block.timestamp;
+            }
+        }
+
+        return totalRewards;
+    }
+
+    function _authorizeUpgrade(address newImplementation) internal view override {}
+
     ////////////////////////////////////////////
     // Public and External view Functions     //
     ///////////////////////////////////////////
     function getUserStakedNftData(address _user) public view returns (StakedNftData[] memory) {
         return s_userStakedNfts[_user];
+    }
+
+    function getStakingStatus() public view returns (bool) {
+        return s_paused;
+    }
+
+    function getRewardRate() public view returns (uint256) {
+        return s_rewardRate;
     }
 }
