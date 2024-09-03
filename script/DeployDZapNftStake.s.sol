@@ -6,12 +6,15 @@ import {DZapNftStake} from "../src/DZapNftStake.sol";
 import {DZapNft} from "../src/DZapNft.sol";
 import {DZapRewardToken} from "../src/DZapRewardToken.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
+import {HelperConfig} from "./HelperConfig.s.sol";
 
 contract DeployDZapNftStake is Script {
-    uint256 private constant deployerKey = 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80;
+    address private deployerAddress;
 
-    function run() external returns (address, address, address, uint256) {
-        vm.startBroadcast();
+    function run() external returns (address, address, address, address) {
+        HelperConfig config = new HelperConfig();
+        deployerAddress = config.activeConfig();
+        vm.startBroadcast(deployerAddress);
 
         //nft
         DZapNft nft = new DZapNft();
@@ -29,6 +32,6 @@ contract DeployDZapNftStake is Script {
         DZapNftStake(address(proxyNftStake)).initialize(address(proxyRewardToken));
 
         vm.stopBroadcast();
-        return (address(proxyNftStake), address(proxyNft), address(proxyRewardToken), deployerKey);
+        return (address(proxyNftStake), address(proxyNft), address(proxyRewardToken), deployerAddress);
     }
 }

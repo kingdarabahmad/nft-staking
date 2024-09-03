@@ -13,7 +13,7 @@ contract DZapNftStakeTest is Test {
     DZapRewardToken public rewardToken;
     DZapNftStake public nftStake;
     DZapNft public nft;
-    uint256 private key;
+    address private deployerAddress;
 
     uint256 private constant UNBONDING_PERIOD = 2 minutes;
     uint256 private constant DELAY_PERIOD = 1 minutes;
@@ -25,7 +25,7 @@ contract DZapNftStakeTest is Test {
     address public USER = makeAddr("USER");
 
     modifier mintNftToUser() {
-        vm.startBroadcast(key);
+        vm.startBroadcast(deployerAddress);
         nft.mintNft(USER);
         vm.stopBroadcast();
         _;
@@ -52,7 +52,7 @@ contract DZapNftStakeTest is Test {
 
     function setUp() public {
         deployer = new DeployDZapNftStake();
-        (nftStakeProxyAddress, nftProxyAddress, rewardTokenProxyAddress, key) = deployer.run();
+        (nftStakeProxyAddress, nftProxyAddress, rewardTokenProxyAddress, deployerAddress) = deployer.run();
         nftStake = DZapNftStake(nftStakeProxyAddress);
         rewardToken = DZapRewardToken(rewardTokenProxyAddress);
         nft = DZapNft(nftProxyAddress);
@@ -105,7 +105,6 @@ contract DZapNftStakeTest is Test {
         ids[0] = 1;
         nftStake.unstakeNft(address(nft), ids);
         DZapNftStake.StakedNftData[] memory stakedNftData = nftStake.getUserStakedNftData(USER);
-        console.log(stakedNftData[0].stakedAt);
         assertEq(stakedNftData[0].isUnbonding, true);
 
         vm.stopPrank();
@@ -182,8 +181,7 @@ contract DZapNftStakeTest is Test {
         uint256[] memory ids = new uint256[](1);
         ids[0] = 1;
         nftStake.unstakeNft(address(nft), ids);
-        console.log(nftStake.getUserStakedNftData(USER)[0].unbondingStart);
-        console.log(block.timestamp);
+
         //claim rewards after 2 days
         vm.warp(block.timestamp + 2 days);
 
@@ -196,7 +194,7 @@ contract DZapNftStakeTest is Test {
 
     function testPauseStaking() public mintNftToUser {
         // Initially, staking should not be paused
-        vm.startBroadcast(key);
+        vm.startBroadcast(deployerAddress);
         nftStake.pauseStaking();
         vm.stopBroadcast();
         vm.startPrank(USER);
@@ -215,7 +213,7 @@ contract DZapNftStakeTest is Test {
     }
 
     function testUnpauseStaking() public mintNftToUser {
-        vm.startBroadcast(key);
+        vm.startBroadcast(deployerAddress);
         nftStake.pauseStaking();
 
         vm.stopBroadcast();
@@ -229,7 +227,7 @@ contract DZapNftStakeTest is Test {
         vm.stopPrank();
 
         //unpause staking
-        vm.startBroadcast(key);
+        vm.startBroadcast(deployerAddress);
         nftStake.unpauseStaking();
         vm.stopBroadcast();
 
@@ -248,7 +246,7 @@ contract DZapNftStakeTest is Test {
     }
 
     function testSetRewardRate() public {
-        vm.startBroadcast(key);
+        vm.startBroadcast(deployerAddress);
         nftStake.setRewardRate(8);
         vm.stopBroadcast();
 
