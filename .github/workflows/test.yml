@@ -40,6 +40,8 @@ jobs:
         id: build
 
       - name: Run Forge tests
+        env:
+          TESTNET_CHAINID: ${{ secrets.TESTNET_CHAINID }}
         run: |
           forge test -vvv
         id: test
