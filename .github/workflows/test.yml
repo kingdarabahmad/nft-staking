@@ -41,7 +41,7 @@ jobs:
 
       - name: Run Forge tests
         env:
-          TESTNET_CHAINID: 98212
+          TESTNET_CHAINID: ${{vars.TESTNET_CHAINID}}
         run: |
           forge test -vvv
         id: test
