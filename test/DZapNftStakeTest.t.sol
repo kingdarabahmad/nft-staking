@@ -125,7 +125,8 @@ contract DZapNftStakeTest is Test {
             stakedAt: block.timestamp,
             lastClaimedAt: block.timestamp,
             isUnbonding: true,
-            unbondingStart: block.timestamp
+            unbondingStart: block.timestamp,
+            lastClaimedBlock: block.number
         });
 
         DZapNftStake.StakedNftData[] memory stakedNftData = nftStake.getUserStakedNftData(USER);
@@ -170,24 +171,33 @@ contract DZapNftStakeTest is Test {
     ///////////////////////
 
     function testClaimRewards() public mintNftToUser stakeNft {
+        vm.startBroadcast(deployerAddress);
+        uint256 newRewardRate = 0.0000000005 * 1e18;
+        nftStake.setRewardRate(newRewardRate);
+        vm.stopBroadcast();
         // stake nft is done by modifier
 
         vm.startPrank(USER);
+        uint256 expectedRewards = 0.00000015 * 1e18;
 
-        uint256 expectedReward = 1036800;
+        //unstake nft after 3 day
 
-        //unstake nft after 1 day
-        vm.warp(block.timestamp + 1 days);
+        vm.warp(block.timestamp + 3 days);
+        vm.roll(block.number + 100);
         uint256[] memory ids = new uint256[](1);
         ids[0] = 1;
         nftStake.unstakeNft(address(nft), ids);
 
-        //claim rewards after 2 days
-        vm.warp(block.timestamp + 2 days);
+        //claim rewards after 5 days
+        vm.warp(block.timestamp + 5 days);
+        vm.roll(block.number + 200);
 
         nftStake.claimRewards();
 
-        assertEq(rewardToken.balanceOf(USER), expectedReward);
+        //the final value to show in frontend is divided by 1e18
+        console.log(rewardToken.balanceOf(USER));
+
+        assertEq(rewardToken.balanceOf(USER), expectedRewards);
 
         vm.stopPrank();
     }
@@ -247,9 +257,10 @@ contract DZapNftStakeTest is Test {
 
     function testSetRewardRate() public {
         vm.startBroadcast(deployerAddress);
-        nftStake.setRewardRate(8);
+        uint256 newRewardRate = 0.5e18;
+        nftStake.setRewardRate(newRewardRate);
         vm.stopBroadcast();
 
-        assertEq(nftStake.getRewardRate(), 8);
+        assertEq(nftStake.getRewardRate(), newRewardRate);
     }
 }

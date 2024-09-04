@@ -48,6 +48,7 @@ contract DZapNftStake is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     ///////////////////////////
     uint256 private constant UNBONDING_PERIOD = 2 minutes;
     uint256 private constant DELAY_PERIOD = 1 minutes;
+    uint256 private constant PRECISION = 1e18;
 
     IRewardToken private i_rewardToken;
     bool private s_paused;
@@ -61,6 +62,7 @@ contract DZapNftStake is Initializable, OwnableUpgradeable, UUPSUpgradeable {
         uint256 lastClaimedAt;
         bool isUnbonding;
         uint256 unbondingStart;
+        uint256 lastClaimedBlock;
     }
 
     mapping(address user => StakedNftData[] stakedNfts) private s_userStakedNfts;
@@ -113,7 +115,7 @@ contract DZapNftStake is Initializable, OwnableUpgradeable, UUPSUpgradeable {
         __UUPSUpgradeable_init();
         i_rewardToken = IRewardToken(i_rewardTokenContract);
         s_paused = false;
-        s_rewardRate = 4;
+        s_rewardRate = 4 * PRECISION;
     }
 
     /////////////////////////////////////
@@ -140,7 +142,8 @@ contract DZapNftStake is Initializable, OwnableUpgradeable, UUPSUpgradeable {
                     stakedAt: block.timestamp,
                     lastClaimedAt: block.timestamp,
                     isUnbonding: false,
-                    unbondingStart: 0
+                    unbondingStart: 0,
+                    lastClaimedBlock: block.number
                 })
             );
         }
@@ -210,8 +213,8 @@ contract DZapNftStake is Initializable, OwnableUpgradeable, UUPSUpgradeable {
         s_paused = false;
     }
 
-    function setRewardRate(uint256 _rewardRate) external onlyOwner {
-        s_rewardRate = _rewardRate;
+    function setRewardRate(uint256 _tokenPerBlockInWei) external onlyOwner {
+        s_rewardRate = (_tokenPerBlockInWei * PRECISION) / PRECISION;
     }
 
     ///////////////////////////////////////
@@ -228,6 +231,7 @@ contract DZapNftStake is Initializable, OwnableUpgradeable, UUPSUpgradeable {
 
     function _calculateRewards(address user) internal returns (uint256) {
         uint256 totalRewards = 0;
+        uint256 currentClaimedBlock = block.number;
         for (uint256 i = 0; i < s_userStakedNfts[user].length; i++) {
             StakedNftData memory stakedNFT = s_userStakedNfts[user][i];
 
@@ -235,9 +239,11 @@ contract DZapNftStake is Initializable, OwnableUpgradeable, UUPSUpgradeable {
                 continue;
             }
             if ((block.timestamp >= stakedNFT.lastClaimedAt + DELAY_PERIOD)) {
-                uint256 rewards = (block.timestamp - stakedNFT.lastClaimedAt) * s_rewardRate;
+                uint256 rewards =
+                    (((currentClaimedBlock - stakedNFT.lastClaimedBlock) * s_rewardRate) * PRECISION) / PRECISION;
                 totalRewards += rewards;
                 s_userStakedNfts[user][i].lastClaimedAt = block.timestamp;
+                s_userStakedNfts[user][i].lastClaimedBlock = currentClaimedBlock;
             }
         }
 

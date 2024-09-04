@@ -13,7 +13,7 @@ contract HelperConfig is Script {
     NetworkConfig public activeConfig;
 
     constructor() {
-        if (block.chainid == 98212) {
+        if (block.chainid == vm.envUint("TESTNET_CHAINID")) {
             activeConfig = getTestnetConfig();
         } else {
             activeConfig = getAnvilConfig();
