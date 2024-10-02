@@ -42,6 +42,7 @@ contract DZapNftStake is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     error DZapNftStake_NoRewardToClaim();
     error DZapNftStake_StakingPaused();
     error DZapNftStake_NotAnOwner();
+    error DZapNftStake_DelayPeriodNotOver();
 
     ///////////////////////////
     // State variables      //
@@ -63,10 +64,10 @@ contract DZapNftStake is Initializable, OwnableUpgradeable, UUPSUpgradeable {
         bool isUnbonding;
         uint256 unbondingStart;
         uint256 lastClaimedBlock;
+        uint256 blockNumberWhenUnbondingStarted;
     }
 
     mapping(address user => StakedNftData[] stakedNfts) private s_userStakedNfts;
-    mapping(address => uint256) private s_pendingRewards;
 
     ///////////////////////////
     // Events                //
@@ -122,6 +123,15 @@ contract DZapNftStake is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     //  Public and External functions  //
     /////////////////////////////////////
 
+    /**
+     * @notice Stakes one or more NFTs from a specified contract.
+     * @param _nftContract The address of the NFT contract.
+     * @param _tokenIds An array of token IDs to stake.
+     * @dev The caller must be the owner of the NFTs being staked.
+     * @dev The NFT contract must be a valid ERC721 contract.
+     * @dev The contract must not be paused.
+     * @dev Emits a {NftStaked} event.
+     */
     function stakeNft(address _nftContract, uint256[] memory _tokenIds)
         public
         AddressMustNotZero(_nftContract)
@@ -143,13 +153,24 @@ contract DZapNftStake is Initializable, OwnableUpgradeable, UUPSUpgradeable {
                     lastClaimedAt: block.timestamp,
                     isUnbonding: false,
                     unbondingStart: 0,
-                    lastClaimedBlock: block.number
+                    lastClaimedBlock: block.number,
+                    blockNumberWhenUnbondingStarted: block.number
                 })
             );
         }
         emit NftStaked(msg.sender, _tokenIds);
     }
 
+    /**
+     * @notice Initiates the unstaking process for one or more NFTs from a specified contract.
+     * @param _nftContract The address of the NFT contract.
+     * @param _tokenIds An array of token IDs to unstake.
+     * @dev The caller must be the owner of the NFTs being unstaked.
+     * @dev The NFT contract must be a valid ERC721 contract.
+     * @dev The NFTs must be currently staked and not already in the process of being unstaked.
+     * @dev Emits a {NftUnstaked} event for each NFT that is successfully unstaked.
+     * @dev Emits a {NftNotFoundOrAlreadyUnbounded} event for each NFT that is not found or is already being unstaked.
+     */
     function unstakeNft(address _nftContract, uint256[] memory _tokenIds)
         public
         AddressMustNotZero(_nftContract)
@@ -164,6 +185,7 @@ contract DZapNftStake is Initializable, OwnableUpgradeable, UUPSUpgradeable {
                 ) {
                     s_userStakedNfts[msg.sender][j].isUnbonding = true;
                     s_userStakedNfts[msg.sender][j].unbondingStart = block.timestamp;
+                    s_userStakedNfts[msg.sender][j].blockNumberWhenUnbondingStarted = block.number;
                     found = true;
                     emit NftUnstaked(msg.sender, _tokenIds[i]);
                     break;
@@ -175,6 +197,15 @@ contract DZapNftStake is Initializable, OwnableUpgradeable, UUPSUpgradeable {
         }
     }
 
+    /**
+     * @notice Withdraws a staked NFT after the unbonding period has ended.
+     * @param _nftContract The address of the NFT contract.
+     * @param _tokenId The ID of the NFT to withdraw.
+     * @dev The caller must be the owner of the NFT.
+     * @dev The NFT must be currently staked and in the process of being unstaked.
+     * @dev The unbonding period must have ended.
+     * @dev The NFT is transferred back to the caller.
+     */
     function withdrawNFT(address _nftContract, uint256 _tokenId) public {
         (bool found, uint256 index) = _findStakedNftIndex(msg.sender, _tokenId);
         if (found) {
@@ -193,26 +224,63 @@ contract DZapNftStake is Initializable, OwnableUpgradeable, UUPSUpgradeable {
         }
     }
 
+    /**
+     * @notice Claims rewards for all staked NFTs after the delay period has ended.
+     * @dev The caller must be the owner of the staked NFTs.
+     * @dev The delay period must have ended since the last claim.
+     * @dev Rewards are calculated based on the staked NFTs and minted to the caller.
+     * @dev Emits a {RewardClaimed} event with the claimed reward amount.
+     */
     function claimRewards() external {
-        uint256 userRewards = _calculateRewards(msg.sender);
+        //claim rewards after Delay period over
+        uint256 userRewards = 0;
+        StakedNftData[] memory stakedNfts = s_userStakedNfts[msg.sender];
+        for (uint256 i = 0; i < stakedNfts.length; i++) {
+            StakedNftData memory stakedNft = stakedNfts[i];
+
+            if (stakedNft.lastClaimedAt + DELAY_PERIOD > block.timestamp) {
+                revert DZapNftStake_DelayPeriodNotOver();
+            }
+
+            userRewards += _calculateRewards(stakedNft);
+            s_userStakedNfts[msg.sender][i].lastClaimedAt = block.timestamp;
+            s_userStakedNfts[msg.sender][i].lastClaimedBlock = block.number;
+        }
 
         if (userRewards <= 0) {
             revert DZapNftStake_NoRewardToClaim();
         }
-        s_pendingRewards[msg.sender] = 0;
+
         i_rewardToken.mint(msg.sender, userRewards);
 
         emit RewardClaimed(msg.sender, userRewards);
     }
 
+    /**
+     * @notice Pauses staking functionality.
+     * @dev Only the contract owner can call this function.
+     * @dev Sets the paused state to true, preventing new staking actions.
+     */
     function pauseStaking() external onlyOwner {
         s_paused = true;
     }
 
+    /**
+     * @notice Unpauses staking functionality.
+     * @dev Only the contract owner can call this function.
+     * @dev Sets the paused state to false, re-enabling staking actions.
+     */
     function unpauseStaking() external onlyOwner {
         s_paused = false;
     }
 
+    /**
+     * @notice Sets the reward rate for staked NFTs.
+     * @param _tokenPerBlockInWei The new reward rate in wei per block.
+     * @dev Only the contract owner can call this function.
+     * @dev The reward rate is calculated by multiplying the input value by `PRECISION` and dividing by `PRECISION`.
+     * @dev The reward rate affects the amount of rewards earned by staked NFTs.
+     */
     function setRewardRate(uint256 _tokenPerBlockInWei) external onlyOwner {
         s_rewardRate = (_tokenPerBlockInWei * PRECISION) / PRECISION;
     }
@@ -229,25 +297,20 @@ contract DZapNftStake is Initializable, OwnableUpgradeable, UUPSUpgradeable {
         return (false, 0);
     }
 
-    function _calculateRewards(address user) internal returns (uint256) {
-        uint256 totalRewards = 0;
+    function _calculateRewards(StakedNftData memory _stakedNft) internal view returns (uint256) {
         uint256 currentClaimedBlock = block.number;
-        for (uint256 i = 0; i < s_userStakedNfts[user].length; i++) {
-            StakedNftData memory stakedNFT = s_userStakedNfts[user][i];
+        uint256 rewards = 0;
+        if (_stakedNft.isUnbonding) {
+            rewards = (
+                ((_stakedNft.blockNumberWhenUnbondingStarted - _stakedNft.lastClaimedBlock) * s_rewardRate) * PRECISION
+            ) / PRECISION;
 
-            if (stakedNFT.unbondingStart + UNBONDING_PERIOD > block.timestamp) {
-                continue;
-            }
-            if ((block.timestamp >= stakedNFT.lastClaimedAt + DELAY_PERIOD)) {
-                uint256 rewards =
-                    (((currentClaimedBlock - stakedNFT.lastClaimedBlock) * s_rewardRate) * PRECISION) / PRECISION;
-                totalRewards += rewards;
-                s_userStakedNfts[user][i].lastClaimedAt = block.timestamp;
-                s_userStakedNfts[user][i].lastClaimedBlock = currentClaimedBlock;
-            }
+            return rewards;
+        } else {
+            rewards = (((currentClaimedBlock - _stakedNft.lastClaimedBlock) * s_rewardRate) * PRECISION) / PRECISION;
+
+            return rewards;
         }
-
-        return totalRewards;
     }
 
     function _authorizeUpgrade(address newImplementation) internal view override {}
@@ -265,5 +328,14 @@ contract DZapNftStake is Initializable, OwnableUpgradeable, UUPSUpgradeable {
 
     function getRewardRate() public view returns (uint256) {
         return s_rewardRate;
+    }
+
+    function getAccumulatedRewards(address user) public view returns (uint256) {
+        StakedNftData[] memory stakedNfts = s_userStakedNfts[user];
+        uint256 totalRewards = 0;
+        for (uint256 i = 0; i < stakedNfts.length; i++) {
+            totalRewards += _calculateRewards(stakedNfts[i]);
+        }
+        return totalRewards;
     }
 }
